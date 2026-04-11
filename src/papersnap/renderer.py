@@ -52,6 +52,22 @@ figcaption {
     padding: 2px 8px;
     margin-bottom: 20px;
 }
+nav.fig-nav {
+    margin: 20px 0 8px;
+    font-size: 0.82rem;
+    line-height: 2;
+}
+nav.fig-nav a {
+    display: inline-block;
+    margin: 2px 4px 2px 0;
+    padding: 3px 10px;
+    background: #f0f4ff;
+    border: 1px solid #c5d0e8;
+    border-radius: 4px;
+    color: #1a5276;
+    text-decoration: none;
+}
+nav.fig-nav a:hover { background: #dce6ff; }
 """
 
 
@@ -61,7 +77,13 @@ def build_html(
     figures: list[FigureInfo],
     title: str | None = None,
 ) -> str:
-    title = html.escape(title if title else pdf_name)
+    if title:
+        display_title = html.escape(title)
+    else:
+        # Clean up the filename: hyphens/underscores → spaces, title-case.
+        display_title = html.escape(
+            pdf_name.replace("-", " ").replace("_", " ").title()
+        )
 
     abstract_html = (
         f"<p>{html.escape(abstract)}</p>"
@@ -70,9 +92,14 @@ def build_html(
     )
 
     figure_blocks: list[str] = []
+    nav_links: list[str] = []
     for fig in figures:
         b64 = encode_png_base64(fig.path)
-        caption_text = html.escape(fig.caption) if fig.caption else "Caption not found."
+        caption_text = (
+            html.escape(fig.caption)
+            if fig.caption
+            else f"Figure {fig.index} — page {fig.page}"
+        )
         figure_blocks.append(
             f'<figure id="fig-{fig.index}">\n'
             f'  <img src="data:image/png;base64,{b64}" '
@@ -80,20 +107,24 @@ def build_html(
             f"  <figcaption>{caption_text}</figcaption>\n"
             f"</figure>"
         )
+        nav_links.append(f'<a href="#fig-{fig.index}">Fig.&nbsp;{fig.index}</a>')
 
     figures_html = "\n".join(figure_blocks) if figure_blocks else "<p>No figures found.</p>"
     figure_count_badge = f'<span class="badge">{len(figures)} figure{"s" if len(figures) != 1 else ""} extracted</span>'
+    nav_html = (
+        f'<nav class="fig-nav">{"".join(nav_links)}</nav>' if nav_links else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>{title} — papersnap</title>
+  <title>{display_title} — papersnap</title>
   <style>{_CSS}</style>
 </head>
 <body>
-  <h1>{title}</h1>
+  <h1>{display_title}</h1>
   {figure_count_badge}
 
   <section id="abstract">
@@ -103,6 +134,7 @@ def build_html(
 
   <section id="figures">
     <h2>Figures</h2>
+    {nav_html}
     {figures_html}
   </section>
 </body>

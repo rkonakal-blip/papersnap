@@ -25,6 +25,7 @@ class FigureEntry:
 class Manifest:
     source_pdf: str
     generated_at: str
+    title: str | None
     figure_count: int
     abstract_found: bool
     output_html: str
@@ -36,10 +37,12 @@ def build_manifest(
     abstract_found: bool,
     figures: list[FigureInfo],
     output_html: Path,
+    title: str | None = None,
 ) -> Manifest:
     return Manifest(
         source_pdf=source_pdf.name,
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        title=title,
         figure_count=len(figures),
         abstract_found=abstract_found,
         output_html=output_html.name,

@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import re
-import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 
 import fitz  # PyMuPDF
-from PIL import Image, ImageDraw, ImageFont
 
 from .caption import find_caption
 from .utils import console
@@ -38,12 +36,6 @@ _FIGURE_REF_SEARCH_PT = 200
 # grid sub-images, and decorative icons that are large in pixels but tiny on page.
 _MIN_RENDER_PT = 100
 
-# Caption rendering constants (pixels).
-_CAPTION_FONT_SIZE = 20
-_CAPTION_PADDING = 20
-_CAPTION_LINE_WIDTH = 80  # chars per line
-
-
 @dataclass
 class FigureInfo:
     index: int
@@ -52,7 +44,6 @@ class FigureInfo:
     caption: str | None
     width_px: int
     height_px: int
-
     @property
     def caption_found(self) -> bool:
         return self.caption is not None
@@ -169,11 +160,54 @@ def _clean_text(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Title / metadata extraction
+# ---------------------------------------------------------------------------
+
+def extract_metadata(doc: fitz.Document) -> str | None:
+    """Return the paper title from PDF metadata or largest font on page 0, or None."""
+    meta = doc.metadata or {}
+    raw_title = (meta.get("title") or "").strip()
+    if (raw_title
+            and len(raw_title.split()) >= 4
+            and any(c.isalpha() for c in raw_title)
+            and not raw_title.replace(" ", "").isnumeric()):
+        return raw_title
+
+    try:
+        page = doc[0]
+        cutoff = page.rect.y0 + page.rect.height * 0.40
+        spans = []
+        for blk in page.get_text("rawdict")["blocks"]:
+            if blk.get("bbox", (0, 0, 0, 0))[1] > cutoff:
+                continue
+            for line in blk.get("lines", []):
+                for span in line.get("spans", []):
+                    text = span.get("text", "").strip()
+                    if not text or text.replace(" ", "").isnumeric() or len(text) < 4:
+                        continue
+                    spans.append(span)
+        if spans:
+            max_size = max(s["size"] for s in spans)
+            parts = [
+                s["text"].strip()
+                for s in spans
+                if abs(s["size"] - max_size) < 0.5 and s["text"].strip()
+            ]
+            candidate = _clean_text(" ".join(parts))
+            if candidate and (len(candidate.split()) >= 4 or len(candidate) >= 20):
+                return candidate
+    except Exception:
+        pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
 # Figure extraction
 # ---------------------------------------------------------------------------
 
 def extract_figures(doc: fitz.Document, output_dir: Path) -> list[FigureInfo]:
-    """Extract scientific figures, composite captions onto PNGs."""
+    """Extract scientific figures from the document."""
     figures_dir = output_dir / "figures"
     figures_dir.mkdir(parents=True, exist_ok=True)
 
@@ -224,9 +258,6 @@ def extract_figures(doc: fitz.Document, output_dir: Path) -> list[FigureInfo]:
             pix.save(str(png_path))
 
             caption = find_caption(page, image_rect, doc, page_num, idx)
-
-            # Composite caption text onto the PNG.
-            _composite_caption(png_path, caption)
 
             figures.append(
                 FigureInfo(
@@ -284,57 +315,3 @@ def _is_scientific_figure(
     return False
 
 
-# ---------------------------------------------------------------------------
-# Caption compositing
-# ---------------------------------------------------------------------------
-
-def _composite_caption(png_path: Path, caption: str | None) -> None:
-    """Render caption text below the figure image and overwrite the PNG."""
-    if not caption:
-        return
-
-    img = Image.open(png_path).convert("RGB")
-    img_w, img_h = img.size
-
-    # Wrap caption text to fit the image width.
-    wrapped_lines = textwrap.wrap(caption, width=_CAPTION_LINE_WIDTH)
-    if not wrapped_lines:
-        return
-
-    # Try to load a default font; fall back to PIL built-in.
-    try:
-        font = ImageFont.truetype("arial.ttf", _CAPTION_FONT_SIZE)
-    except (IOError, OSError):
-        try:
-            font = ImageFont.truetype(
-                "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-                _CAPTION_FONT_SIZE,
-            )
-        except (IOError, OSError):
-            font = ImageFont.load_default()
-
-    # Measure text height using a temporary draw surface.
-    tmp_draw = ImageDraw.Draw(Image.new("RGB", (1, 1)))
-    line_h = int(tmp_draw.textbbox((0, 0), "Ag", font=font)[3]) + 4
-    caption_block_h = line_h * len(wrapped_lines) + _CAPTION_PADDING * 2
-
-    # Build composite: original image on top, white caption block below.
-    composite = Image.new("RGB", (img_w, img_h + caption_block_h), "white")
-    composite.paste(img, (0, 0))
-
-    draw = ImageDraw.Draw(composite)
-
-    # Thin separator line between image and caption.
-    draw.line(
-        [(0, img_h), (img_w, img_h)],
-        fill="#cccccc",
-        width=1,
-    )
-
-    # Render each wrapped line.
-    y = img_h + _CAPTION_PADDING
-    for line in wrapped_lines:
-        draw.text((_CAPTION_PADDING, y), line, fill="#222222", font=font)
-        y += line_h
-
-    composite.save(str(png_path), "PNG")
