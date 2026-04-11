@@ -1,1 +1,1 @@
-# paperdig
+# papersnap
