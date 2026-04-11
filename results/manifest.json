@@ -1,0 +1,81 @@
+{
+  "source_pdf": "REE_paper_1.pdf",
+  "generated_at": "2026-04-04T03:45:04Z",
+  "figure_count": 8,
+  "abstract_found": false,
+  "output_html": "REE_paper_1.html",
+  "figures": [
+    {
+      "index": 1,
+      "filename": "figure_1.png",
+      "page": 1,
+      "caption": null,
+      "caption_found": false,
+      "width_px": 120,
+      "height_px": 119
+    },
+    {
+      "index": 2,
+      "filename": "figure_2.png",
+      "page": 1,
+      "caption": null,
+      "caption_found": false,
+      "width_px": 237,
+      "height_px": 299
+    },
+    {
+      "index": 3,
+      "filename": "figure_3.png",
+      "page": 3,
+      "caption": "Figure 1. REE production by different countries and utilization for different applica- tions in 2017 (https://minerals.usgs.gov/minerals/pubs/mcs/2017/mcs2017.pdf).",
+      "caption_found": true,
+      "width_px": 1028,
+      "height_px": 1012
+    },
+    {
+      "index": 4,
+      "filename": "figure_4.png",
+      "page": 3,
+      "caption": "Figure 2. Estimated supply risk for Eu, Dy and Er in addition to several other metals in the near future (Graede, 2015).",
+      "caption_found": true,
+      "width_px": 1028,
+      "height_px": 743
+    },
+    {
+      "index": 5,
+      "filename": "figure_5.png",
+      "page": 6,
+      "caption": "Figure 3. Occurrence of manganese nodules, cobalt crusts, marine mud and phosphorites at the ocean basins, seamounts and continental margins in the oceans.",
+      "caption_found": true,
+      "width_px": 2126,
+      "height_px": 1383
+    },
+    {
+      "index": 6,
+      "filename": "figure_6.png",
+      "page": 8,
+      "caption": "Figure 4. Trace elements have been divided into four groups depending upon their function in the environment (Bott, 1995; Balaram, 2016b).",
+      "caption_found": true,
+      "width_px": 2008,
+      "height_px": 1050
+    },
+    {
+      "index": 7,
+      "filename": "figure_7.png",
+      "page": 13,
+      "caption": "Figure 5. The application of different analytical techniques for REE determination in the earth and environmental materials (ICP-MS includes HR-ICP-MS also).",
+      "caption_found": true,
+      "width_px": 1028,
+      "height_px": 574
+    },
+    {
+      "index": 8,
+      "filename": "figure_8.png",
+      "page": 19,
+      "caption": null,
+      "caption_found": false,
+      "width_px": 296,
+      "height_px": 413
+    }
+  ]
+}
