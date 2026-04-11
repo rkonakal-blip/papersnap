@@ -30,8 +30,13 @@ _MIN_AREA = 15_000
 _CAPTION_START_RE = re.compile(r"^\s*(Figure|Fig\.?)\s+\d+", re.IGNORECASE)
 
 # How many points around an image to scan for ANY "Figure" text reference
-# (used for the scientific-figure gate).
-_FIGURE_REF_SEARCH_PT = 400
+# (used for the scientific-figure gate). Kept tight to avoid false positives
+# from unrelated figure references elsewhere on the page.
+_FIGURE_REF_SEARCH_PT = 200
+
+# Minimum rendered size on the page (points). Filters out dataset thumbnails,
+# grid sub-images, and decorative icons that are large in pixels but tiny on page.
+_MIN_RENDER_PT = 100
 
 # Caption rendering constants (pixels).
 _CAPTION_FONT_SIZE = 20
@@ -59,45 +64,104 @@ class FigureInfo:
 
 def extract_abstract(doc: fitz.Document) -> str | None:
     """Return the abstract text or None if not found."""
-    all_blocks: list[tuple[float, float, str]] = []
+    # Primary: look for an explicit 'Abstract' heading.
+    result = _labeled_abstract(doc)
+    if result:
+        return result
+    # Fallback: infer abstract as the first substantive block(s) before the
+    # first section heading on page 0 (handles papers with no 'Abstract' label).
+    return _unlabeled_abstract(doc)
 
-    for page in doc:
-        for block in page.get_text("blocks"):
-            if block[6] != 0:
-                continue
-            all_blocks.append((block[1], block[0], block[4]))
 
-    all_blocks.sort(key=lambda b: (b[0], b[1]))
+def _labeled_abstract(doc: fitz.Document) -> str | None:
+    """Find abstract when an explicit 'Abstract' heading is present."""
+    # Only scan the first two pages — abstracts are never further in.
+    # Process each page independently so y-coordinates stay page-relative.
+    for page_num in range(min(2, len(doc))):
+        page = doc[page_num]
+        blocks = [b for b in page.get_text("blocks") if b[6] == 0]
+        blocks.sort(key=lambda b: (b[1], b[0]))
+        page_mid_x = page.rect.width / 2
 
-    abstract_start = -1
-    for i, (_, _, text) in enumerate(all_blocks):
-        stripped = text.strip()
-        if re.match(r"^abstract\s*[:\-—]?\s*$", stripped, re.IGNORECASE):
-            abstract_start = i + 1
+        for i, block in enumerate(blocks):
+            stripped = block[4].strip()
+
+            # "Abstract" heading alone on its own line.
+            if re.match(r"^abstract\s*[:\-—]?\s*$", stripped, re.IGNORECASE):
+                parts: list[str] = []
+                col_x: float | None = None
+
+                for b in blocks[i + 1:]:
+                    t = b[4].strip()
+                    if not t:
+                        continue
+                    if _is_section_heading(t):
+                        break
+                    if col_x is None:
+                        col_x = b[0]
+                    else:
+                        same_col = (b[0] < page_mid_x) == (col_x < page_mid_x)
+                        if not same_col:
+                            continue
+                    parts.append(t)
+                    if len(" ".join(parts).split()) > 350:
+                        break
+                if parts:
+                    return _clean_text(" ".join(parts))
+
+            # "Abstract: text on the same line."
+            fused = re.match(
+                r"^abstract\s*[:\-—]\s+(.+)", stripped, re.IGNORECASE | re.DOTALL
+            )
+            if fused:
+                return _clean_text(fused.group(1))
+
+    return None
+
+
+def _unlabeled_abstract(doc: fitz.Document) -> str | None:
+    """Infer abstract from page 0: the first substantive block(s) before the
+    first section heading, skipping short metadata blocks (title, authors,
+    affiliations) which are always < 50 words."""
+    page = doc[0]
+    blocks = [b for b in page.get_text("blocks") if b[6] == 0]
+    blocks.sort(key=lambda b: (b[1], b[0]))
+    page_mid_x = page.rect.width / 2
+
+    # Find where the first section heading is.
+    stop_idx = len(blocks)
+    for i, b in enumerate(blocks):
+        if _is_section_heading(b[4].strip()):
+            stop_idx = i
             break
-        fused = re.match(
-            r"^abstract\s*[:\-—]\s+(.+)", stripped, re.IGNORECASE | re.DOTALL
-        )
-        if fused:
-            return _clean_text(fused.group(1))
 
-    if abstract_start == -1:
-        return None
-
+    col_x: float | None = None
     parts: list[str] = []
-    for _, _, text in all_blocks[abstract_start:]:
-        stripped = text.strip()
-        if not stripped:
+
+    for b in blocks[:stop_idx]:
+        t = b[4].strip()
+        # Skip metadata: title, authors, affiliations are always short.
+        if len(t.split()) < 50:
             continue
-        if _is_section_heading(stripped):
+        # Establish column from first qualifying block.
+        if col_x is None:
+            col_x = b[0]
+        else:
+            same_col = (b[0] < page_mid_x) == (col_x < page_mid_x)
+            if not same_col:
+                continue
+        parts.append(t)
+        if len(" ".join(parts).split()) > 350:
             break
-        parts.append(stripped)
 
     return _clean_text(" ".join(parts)) if parts else None
 
 
 def _is_section_heading(text: str) -> bool:
-    return len(text) < 60 and bool(_STOP_HEADINGS.match(text))
+    # Check only the first line — heading blocks sometimes include the first
+    # sentence of the section, making the full block > 60 chars.
+    first_line = text.split("\n")[0].strip()
+    return bool(_STOP_HEADINGS.match(first_line))
 
 
 def _clean_text(text: str) -> str:
@@ -114,17 +178,16 @@ def extract_figures(doc: fitz.Document, output_dir: Path) -> list[FigureInfo]:
     figures_dir.mkdir(parents=True, exist_ok=True)
 
     figures: list[FigureInfo] = []
-    seen_xrefs_per_page: dict[int, set[int]] = {}
+    seen_xrefs: set[int] = set()  # global — same image in appendix/repeated pages extracted once
 
     for page_num in range(len(doc)):
         page = doc[page_num]
-        seen = seen_xrefs_per_page.setdefault(page_num, set())
 
         for img_info in page.get_images(full=True):
             xref = img_info[0]
-            if xref in seen:
+            if xref in seen_xrefs:
                 continue
-            seen.add(xref)
+            seen_xrefs.add(xref)
 
             image_data = doc.extract_image(xref)
             w, h = image_data["width"], image_data["height"]
@@ -135,6 +198,11 @@ def extract_figures(doc: fitz.Document, output_dir: Path) -> list[FigureInfo]:
             # Get image position for caption search and column alignment.
             rects = page.get_image_rects(xref)
             image_rect = rects[0] if rects else page.rect
+
+            # Rendered-size gate: skip images that appear tiny on the page
+            # (dataset thumbnails, multi-panel grid cells, icons).
+            if image_rect.width < _MIN_RENDER_PT or image_rect.height < _MIN_RENDER_PT:
+                continue
 
             # --- Scientific figure gate ---
             # Only keep images that have a "Figure X" caption or reference nearby.

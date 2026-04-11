@@ -8,11 +8,15 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import fitz
 
-# Anchored pattern: block must START with Figure/Fig label.
-_CAPTION_START_RE = re.compile(r"^\s*(Figure|Fig\.?)\s+\d+", re.IGNORECASE)
+# Anchored pattern: block must START with Figure/Fig label followed by a
+# separator. This prevents body sentences like "Figure 3 shows that..."
+# from being mistaken for captions.
+_CAPTION_START_RE = re.compile(
+    r"^\s*(Figure|Fig\.?)\s+\d+\s*[:.—\-]", re.IGNORECASE
+)
 
 # How far below the image bbox (in points) to search.
-_SEARCH_DEPTH_PT = 300
+_SEARCH_DEPTH_PT = 200
 
 # How far above the image bbox (some papers caption above).
 _SEARCH_ABOVE_PT = 60
@@ -129,29 +133,15 @@ def _find_caption_block(
 
 
 def _accumulate_caption(blocks: list, start: int) -> str:
-    """Collect the starting block and any immediately following continuation blocks."""
-    parts = [blocks[start][4].strip()]
-    # Continuation block: not a new Figure label, starts close-ish in y.
-    prev_y1 = blocks[start][3]
-    for block in blocks[start + 1:]:
-        text = block[4].strip()
-        if not text:
-            continue
-        # Stop if the next block looks like a new section/figure label.
-        if _CAPTION_START_RE.match(text):
-            break
-        # Stop if there's a large vertical gap (> 30pt) — new section.
-        if block[1] - prev_y1 > 30:
-            break
-        parts.append(text)
-        prev_y1 = block[3]
-
-    return _clean(" ".join(parts))
+    """Return the caption block text.
+    Captions are always a single block in well-formed PDFs — accumulating
+    continuation blocks only pulls in body text from adjacent paragraphs."""
+    return _clean(blocks[start][4].strip())
 
 
 def _full_page_scan(page: "fitz.Page", figure_index: int) -> str | None:
     pattern = re.compile(
-        rf"^\s*(Figure|Fig\.?)\s+{figure_index}\b", re.IGNORECASE
+        rf"^\s*(Figure|Fig\.?)\s+{figure_index}\s*[:.—\-]", re.IGNORECASE
     )
     blocks = sorted(page.get_text("blocks"), key=lambda b: (b[1], b[0]))
     for i, block in enumerate(blocks):

@@ -24,7 +24,7 @@ h2 { font-size: 1.2rem; margin: 32px 0 12px; border-bottom: 1px solid #ddd; padd
 #figures { margin-top: 16px; }
 figure {
     margin: 36px 0;
-    padding: 16px;
+    padding: 28px 32px;
     border: 1px solid #e0e0e0;
     border-radius: 6px;
     background: #fafafa;
@@ -59,8 +59,9 @@ def build_html(
     pdf_name: str,
     abstract: str | None,
     figures: list[FigureInfo],
+    title: str | None = None,
 ) -> str:
-    title = html.escape(pdf_name)
+    title = html.escape(title if title else pdf_name)
 
     abstract_html = (
         f"<p>{html.escape(abstract)}</p>"
