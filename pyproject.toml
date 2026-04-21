@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "papersnap"
-version = "0.1.0"
+version = "0.3.0"
 description = "Extract and visualize research paper abstracts and figures from PDFs"
 requires-python = ">=3.10"
 dependencies = [
