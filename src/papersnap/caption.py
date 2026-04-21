@@ -8,11 +8,25 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     import fitz
 
-# Anchored pattern: block must START with Figure/Fig label followed by a
-# separator. This prevents body sentences like "Figure 3 shows that..."
-# from being mistaken for captions.
-_CAPTION_START_RE = re.compile(
-    r"^\s*(Figure|Fig\.?)\s+\d+\s*[:.—\-]", re.IGNORECASE
+# Strict: separator required — used for full-page scan to avoid matching
+# body sentences like "Figure 3 shows that..." across the whole page.
+_CAPTION_STRICT = re.compile(
+    r"^\s*(Figure|Fig\.?)\s+[Ss]?\d+[A-Za-z]?\s*[:.—\-|,]", re.IGNORECASE
+)
+
+# Spatial: separator optional — proximity to the image is already the guard.
+# Covers Nature/Springer style "Fig. 1 Description..." with no separator.
+_CAPTION_SPATIAL = re.compile(
+    r"^\s*(Figure|Fig\.?)\s+[Ss]?\d+[A-Za-z]?\b", re.IGNORECASE
+)
+
+# Negative guard: body sentences that reference a figure but are not captions.
+_BODY_REF = re.compile(
+    r"^\s*(Figure|Fig\.?)\s+[Ss]?\d+[A-Za-z]?\s+"
+    r"(shows?|demonstrates?|illustrates?|depicts?|indicates?|presents?|"
+    r"reveals?|displays?|compares?|summarizes?|highlights?|suggests?|"
+    r"confirms?|provides?|gives?|lists?)\b",
+    re.IGNORECASE,
 )
 
 # How far below the image bbox (in points) to search.
@@ -99,33 +113,39 @@ def _find_in_rect(
     search_rect: "fitz.Rect",
     image_rect: "fitz.Rect",
 ) -> str | None:
-    """Search clipped rect for a caption, preferring same-column blocks."""
+    """Search clipped rect for a caption, preferring same-column blocks.
+
+    Two-tier matching:
+    1. Strict pattern (separator required) — higher confidence.
+    2. Relaxed pattern (no separator) — fallback, guarded by body-ref filter.
+    Each tier tries column-aligned blocks before accepting any block in the rect.
+    """
     blocks = page.get_text("blocks", clip=search_rect)
-    # Sort top-to-bottom so we accumulate multi-line captions in order.
     blocks = sorted(blocks, key=lambda b: (b[1], b[0]))
 
-    # First pass: prefer blocks whose x-range overlaps the image column.
-    caption_block_idx = _find_caption_block(blocks, prefer_x=image_rect)
-    if caption_block_idx is None:
-        # Second pass: accept any block in the rect.
-        caption_block_idx = _find_caption_block(blocks, prefer_x=None)
-    if caption_block_idx is None:
-        return None
+    for strict in (True, False):
+        for prefer_x in (image_rect, None):
+            idx = _find_caption_block(blocks, prefer_x=prefer_x, strict=strict)
+            if idx is not None:
+                return _accumulate_caption(blocks, idx)
 
-    return _accumulate_caption(blocks, caption_block_idx)
+    return None
 
 
 def _find_caption_block(
     blocks: list,
     prefer_x: "fitz.Rect | None",
+    strict: bool,
 ) -> int | None:
+    pattern = _CAPTION_STRICT if strict else _CAPTION_SPATIAL
     for i, block in enumerate(blocks):
         text = block[4].strip()
-        if not _CAPTION_START_RE.match(text):
+        if not pattern.match(text):
+            continue
+        if not strict and _BODY_REF.match(text):
             continue
         if prefer_x is not None:
             bx0, bx1 = block[0], block[2]
-            # Check horizontal overlap with image column.
             if bx1 < prefer_x.x0 - 10 or bx0 > prefer_x.x1 + 10:
                 continue
         return i
@@ -141,7 +161,8 @@ def _accumulate_caption(blocks: list, start: int) -> str:
 
 def _full_page_scan(page: "fitz.Page", figure_index: int) -> str | None:
     pattern = re.compile(
-        rf"^\s*(Figure|Fig\.?)\s+{figure_index}\s*[:.—\-]", re.IGNORECASE
+        rf"^\s*(Figure|Fig\.?)\s+[Ss]?{figure_index}[A-Za-z]?\s*[:.—\-|,]",
+        re.IGNORECASE,
     )
     blocks = sorted(page.get_text("blocks"), key=lambda b: (b[1], b[0]))
     for i, block in enumerate(blocks):

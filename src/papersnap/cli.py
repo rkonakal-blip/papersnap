@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from dataclasses import asdict
 from pathlib import Path
 
 import typer
@@ -32,7 +34,7 @@ def _process_pdf(paper: Path, output_dir: Path) -> None:
     console.print(
         Panel(
             f"[bold]papersnap[/bold] — processing [cyan]{paper.name}[/cyan]\n"
-            f"Output → {output_dir}",
+            f"Output -> {output_dir}",
             expand=False,
         )
     )
@@ -67,8 +69,9 @@ def _process_pdf(paper: Path, output_dir: Path) -> None:
         abstract = extract_abstract(doc)
 
     if abstract:
-        preview = abstract[:120] + ("…" if len(abstract) > 120 else "")
-        console.print(f"[green]Abstract found[/green] — {preview}")
+        safe = abstract[:120].encode("cp1252", errors="replace").decode("cp1252")
+        preview = safe + ("..." if len(abstract) > 120 else "")
+        console.print(f"[green]Abstract found[/green] - {preview}")
     else:
         console.print("[yellow]Abstract not found[/yellow] — placeholder will appear in HTML")
 
@@ -103,14 +106,22 @@ def _process_pdf(paper: Path, output_dir: Path) -> None:
     # --- Manifest ---
     manifest = build_manifest(paper, abstract is not None, figures, html_path, title=title)
     manifest_path = write_manifest(output_dir, manifest)
+
+    central_dir = output_dir.parent / "manifests"
+    ensure_dir(central_dir)
+    central_path = central_dir / f"manifest_{paper.stem}.json"
+    central_path.write_text(
+        json.dumps(asdict(manifest), indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
     console.print(f"[green]Manifest written:[/green] {manifest_path}")
 
     console.print(
         Panel(
             f"[bold green]Done![/bold green]\n"
-            f"  HTML    → {html_path}\n"
-            f"  Figures → {output_dir / 'figures'}\n"
-            f"  Manifest→ {manifest_path}",
+            f"  HTML     -> {html_path}\n"
+            f"  Figures  -> {output_dir / 'figures'}\n"
+            f"  Manifest -> {manifest_path}",
             expand=False,
         )
     )
