@@ -69,7 +69,7 @@ _VEC_MIN_PATH_DIM = 5      # skip paths tiny in BOTH dimensions (tick marks, dot
 _VEC_MIN_PATH_AREA = 500   # area threshold for non-spine paths
 _VEC_MIN_SPINE_LEN = 20    # paths longer than this in one dimension are kept as spines
 _VEC_RENDER_ZOOM = 2       # render vector regions at 2× for crisp output
-_VEC_BBOX_MARGIN = 6       # padding added around the computed cluster bbox (pts)
+_VEC_BBOX_MARGIN = 40      # padding added around the computed cluster bbox (pts)
 
 @dataclass
 class FigureInfo:
@@ -387,7 +387,89 @@ def extract_figures(doc: fitz.Document, output_dir: Path) -> list[FigureInfo]:
         ):
             figures.append(fig)
 
-    return figures
+    return _deduplicate_figures(figures)
+
+
+def _deduplicate_figures(figures: list[FigureInfo]) -> list[FigureInfo]:
+    """Remove vector placeholders when a rendered version of the same figure exists.
+
+    Only removes the unambiguous case: a placeholder whose caption is already
+    covered by a rendered figure on the same page.
+    """
+    from collections import defaultdict
+
+    groups: dict[tuple, list[FigureInfo]] = defaultdict(list)
+    for fig in figures:
+        if fig.caption:
+            groups[(fig.page, fig.caption)].append(fig)
+
+    to_remove: set[int] = set()
+    for group in groups.values():
+        rendered = [f for f in group if f.path is not None]
+        placeholders = [f for f in group if f.path is None]
+        if rendered and placeholders:
+            for p in placeholders:
+                to_remove.add(p.index)
+
+    kept = [f for f in figures if f.index not in to_remove]
+    for i, fig in enumerate(kept, 1):
+        fig.index = i
+    return kept
+
+
+def _find_poppler_path() -> str | None:
+    """Return path to poppler bin dir, or None if not found."""
+    import shutil, sys
+    if shutil.which("pdftocairo"):
+        return None  # already in PATH
+    candidates = [
+        Path(sys.prefix) / "Library" / "bin",
+        Path.home() / "anaconda3" / "Library" / "bin",
+        Path.home() / "miniconda3" / "Library" / "bin",
+    ]
+    for p in candidates:
+        if (p / "pdftocairo.exe").exists() or (p / "pdftocairo").exists():
+            return str(p)
+    return None
+
+
+def _render_vector_region(
+    page: "fitz.Page",
+    bbox: "fitz.Rect",
+    output_path: Path,
+    zoom: int = 2,
+) -> tuple[int, int] | None:
+    """Render a bbox region of a page via PyMuPDF. Returns (w, h) or None."""
+    try:
+        import fitz
+        pad = 20  # pts — catches axis labels outside drawing paths
+        padded = fitz.Rect(
+            max(page.rect.x0, bbox.x0 - pad),
+            max(page.rect.y0, bbox.y0 - pad),
+            min(page.rect.x1, bbox.x1 + pad),
+            min(page.rect.y1, bbox.y1 + pad),
+        )
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, clip=padded)
+        pix.save(str(output_path))
+        return pix.width, pix.height
+    except Exception:
+        return None
+
+
+def _figure_region_above_caption(
+    page: "fitz.Page",
+    caption_rect: "fitz.Rect",
+    all_captions: list,
+) -> "fitz.Rect":
+    """Return the region between the previous caption (or page top) and this caption."""
+    import fitz
+    prev_bottom = page.rect.y0
+    for other in all_captions:
+        other_rect = fitz.Rect(other[:4])
+        if other_rect.y1 < caption_rect.y0 and other_rect.y1 > prev_bottom:
+            prev_bottom = other_rect.y1
+    return fitz.Rect(page.rect.x0, prev_bottom + 2, page.rect.x1, caption_rect.y0)
 
 
 def _extract_vector_figures(
@@ -398,32 +480,77 @@ def _extract_vector_figures(
     next_idx: int,
     raster_rects: list,
 ) -> list[FigureInfo]:
-    """Detect vector figures (captions with no raster nearby) and return placeholders."""
+    """Detect vector figures; render via pdf2image if poppler available, else placeholder."""
     results: list[FigureInfo] = []
+    poppler_path = _find_poppler_path()
+    pdf_path = Path(doc.name)
+    all_captions = _find_figure_captions(page)
+    used_caption_texts: set[str] = set()
 
-    for caption_block in _find_figure_captions(page):
+    for caption_block in all_captions:
         caption_rect = fitz.Rect(caption_block[:4])
         if _caption_covered_by_raster(caption_rect, raster_rects):
             continue
 
         idx = next_idx + len(results)
         caption_text = " ".join(caption_block[4].strip().split())
-        results.append(FigureInfo(
-            index=idx, path=None, page=page_num + 1,
-            caption=caption_text, width_px=0, height_px=0,
-            vector_only=True,
-        ))
-        console.print(
-            f"  [dim]figure {idx}[/dim] page {page_num + 1} "
-            f"[yellow](vector — detected, excluded)[/yellow]"
+
+        if caption_text in used_caption_texts:
+            continue
+        used_caption_texts.add(caption_text)
+
+        # Caption-anchored region: everything between previous caption and this one.
+        figure_region = _figure_region_above_caption(page, caption_rect, all_captions)
+
+        # Safety guard: skip if no actual drawing paths exist in the region.
+        has_drawings = any(
+            fitz.Rect(p["rect"]).intersects(figure_region)
+            for p in page.get_drawings()
         )
+
+        rendered = False
+        if has_drawings and figure_region.height > _MIN_RENDER_PT:
+            png_path = figures_dir / f"figure_{idx}.png"
+            dims = _render_vector_region(page, figure_region, png_path)
+            if dims:
+                w, h = dims
+                caption = find_caption(page, caption_rect, doc, page_num, idx)
+                results.append(FigureInfo(
+                    index=idx, path=png_path, page=page_num + 1,
+                    caption=caption or caption_text, width_px=w, height_px=h,
+                    vector_only=False,
+                ))
+                status = "caption found" if caption else "no caption"
+                console.print(
+                    f"  [dim]figure {idx}[/dim] page {page_num + 1} "
+                    f"[cyan](vector — rendered)[/cyan] — {status}"
+                )
+                rendered = True
+
+        if not rendered:
+            results.append(FigureInfo(
+                index=idx, path=None, page=page_num + 1,
+                caption=caption_text, width_px=0, height_px=0,
+                vector_only=True,
+            ))
+            reason = "no drawings found" if not has_drawings else "render failed"
+            console.print(
+                f"  [dim]figure {idx}[/dim] page {page_num + 1} "
+                f"[yellow](vector — {reason})[/yellow]"
+            )
 
     return results
 
 
 def _find_figure_captions(page: fitz.Page) -> list:
-    """Return all text blocks on the page whose text starts with 'Figure N'."""
-    return [b for b in page.get_text("blocks") if _CAPTION_START_RE.match(b[4].strip())]
+    """Return text blocks that are actual figure captions (body references excluded)."""
+    from .caption import _CAPTION_SPATIAL, _BODY_REF
+    results = []
+    for b in page.get_text("blocks"):
+        t = b[4].strip()
+        if _CAPTION_SPATIAL.match(t) and not _BODY_REF.match(t):
+            results.append(b)
+    return results
 
 
 def _caption_covered_by_raster(caption_rect: fitz.Rect, raster_rects: list) -> bool:

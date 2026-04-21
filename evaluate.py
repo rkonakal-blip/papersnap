@@ -44,6 +44,8 @@ class PaperResult:
     caption_found_count: int
     caption_total: int
     abstract_f1: float | None
+    caption_correct_count: int = 0   # captions with F1 >= 0.5 vs GT
+    caption_gt_total: int = 0         # GT figures that have caption text
 
 
 def load_manifest(manifests_dir: Path, paper_id: str) -> dict | None:
@@ -96,6 +98,38 @@ def extract_abstract_from_pdf(pdf_path: Path) -> str | None:
     return None
 
 
+def caption_accuracy(gt_figures: list, extracted_figures: list) -> tuple[int, int]:
+    """Return (correct_count, gt_total) where correct = best-match F1 >= 0.5.
+
+    For each GT figure with a caption, find the extracted figure caption on the
+    same page with the highest word-overlap F1. Score >= 0.5 counts as correct.
+    """
+    ext_by_page: dict[int, list[str]] = defaultdict(list)
+    for f in extracted_figures:
+        cap = f.get("caption") or ""
+        if cap:
+            ext_by_page[f.get("page", 0)].append(cap)
+
+    all_extracted_captions = [f.get("caption") or "" for f in extracted_figures if f.get("caption")]
+
+    correct = 0
+    gt_total = 0
+    for gt_fig in gt_figures:
+        gt_cap = (gt_fig.get("caption_text") or "").strip()
+        if not gt_cap:
+            continue
+        gt_total += 1
+        page = gt_fig.get("page", 0)
+        candidates = ext_by_page.get(page, []) or all_extracted_captions
+        if not candidates:
+            continue
+        best_f1 = max(word_overlap_f1(gt_cap, c) for c in candidates)
+        if best_f1 >= 0.5:
+            correct += 1
+
+    return correct, gt_total
+
+
 def word_overlap_f1(text1: str, text2: str) -> float:
     words1 = set(re.findall(r"\b\w+\b", text1.lower()))
     words2 = set(re.findall(r"\b\w+\b", text2.lower()))
@@ -128,6 +162,8 @@ def evaluate_paper(
     figures = manifest.get("figures", [])
     caption_found_count = sum(1 for f in figures if f.get("caption_found", False))
 
+    cap_correct, cap_gt_total = caption_accuracy(gt.get("figures", []), figures)
+
     abstract_f1 = None
     if abstract_found and pdfs_dir is not None and papersnap_output is not None:
         pdf_path = pdfs_dir / f"{paper_id}.pdf"
@@ -145,6 +181,8 @@ def evaluate_paper(
         caption_found_count=caption_found_count,
         caption_total=extracted_count,
         abstract_f1=abstract_f1,
+        caption_correct_count=cap_correct,
+        caption_gt_total=cap_gt_total,
     )
 
 
@@ -240,6 +278,15 @@ def print_summary(results: list[PaperResult], console: Console) -> None:
         console.print(
             f"  Caption detection:      {total_captions_found}/{total_captions_possible}"
             f" ({total_captions_found / total_captions_possible * 100:.0f}%)"
+        )
+
+    total_cap_correct = sum(r.caption_correct_count for r in results)
+    total_cap_gt = sum(r.caption_gt_total for r in results)
+    if total_cap_gt > 0:
+        console.print(
+            f"  Caption accuracy:       {total_cap_correct}/{total_cap_gt}"
+            f" ({total_cap_correct / total_cap_gt * 100:.0f}%)"
+            f"  [dim](F1 >= 0.5 vs ground truth)[/dim]"
         )
     if f1_scores:
         console.print(
