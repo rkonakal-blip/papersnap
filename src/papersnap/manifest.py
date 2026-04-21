@@ -13,12 +13,13 @@ from .extractor import FigureInfo
 @dataclass
 class FigureEntry:
     index: int
-    filename: str
+    filename: str | None
     page: int
     caption: str | None
     caption_found: bool
     width_px: int
     height_px: int
+    vector_only: bool = False
 
 
 @dataclass
@@ -49,12 +50,13 @@ def build_manifest(
         figures=[
             FigureEntry(
                 index=fig.index,
-                filename=fig.path.name,
+                filename=fig.path.name if fig.path else None,
                 page=fig.page,
                 caption=fig.caption,
                 caption_found=fig.caption_found,
                 width_px=fig.width_px,
                 height_px=fig.height_px,
+                vector_only=fig.vector_only,
             )
             for fig in figures
         ],

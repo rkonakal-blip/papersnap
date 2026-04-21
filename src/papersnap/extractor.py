@@ -74,11 +74,13 @@ _VEC_BBOX_MARGIN = 6       # padding added around the computed cluster bbox (pts
 @dataclass
 class FigureInfo:
     index: int
-    path: Path
+    path: Path | None  # None for vector placeholders
     page: int          # 1-based
     caption: str | None
     width_px: int
     height_px: int
+    vector_only: bool = False
+
     @property
     def caption_found(self) -> bool:
         return self.caption is not None
@@ -396,90 +398,24 @@ def _extract_vector_figures(
     next_idx: int,
     raster_rects: list,
 ) -> list[FigureInfo]:
-    """Find vector figures by anchoring to unmatched 'Figure N' captions."""
+    """Detect vector figures (captions with no raster nearby) and return placeholders."""
     results: list[FigureInfo] = []
 
-    caption_blocks = _find_figure_captions(page)
-
-    # Also pull captions from the top of this page that belong to a figure
-    # whose drawings are at the bottom of the previous page.
-    prev_caption_blocks: list = []
-    if page_num > 0:
-        prev_page = doc[page_num - 1]
-        top_zone = fitz.Rect(
-            page.rect.x0, page.rect.y0,
-            page.rect.x1, page.rect.y0 + _FIGURE_REF_SEARCH_PT,
-        )
-        for b in page.get_text("blocks", clip=top_zone):
-            if _CAPTION_START_RE.match(b[4].strip()):
-                prev_caption_blocks.append((b, prev_page, page_num - 1))
-
-    for caption_block in caption_blocks:
+    for caption_block in _find_figure_captions(page):
         caption_rect = fitz.Rect(caption_block[:4])
-
-        # Skip if a raster figure already sits near this caption.
         if _caption_covered_by_raster(caption_rect, raster_rects):
             continue
 
-        # Search for drawing cluster above the caption on the current page.
-        search_rect = fitz.Rect(
-            page.rect.x0,
-            max(caption_rect.y0 - _FIGURE_REF_SEARCH_PT * 2, page.rect.y0),
-            page.rect.x1,
-            caption_rect.y0,
-        )
-        cluster_bbox = _drawing_cluster_bbox(page, search_rect)
-        render_page = page
-
-        # Fallback: look at the bottom of the previous page.
-        if cluster_bbox is None and page_num > 0:
-            prev_page = doc[page_num - 1]
-            prev_search = fitz.Rect(
-                prev_page.rect.x0,
-                prev_page.rect.y1 - _FIGURE_REF_SEARCH_PT * 2,
-                prev_page.rect.x1,
-                prev_page.rect.y1,
-            )
-            cluster_bbox = _drawing_cluster_bbox(prev_page, prev_search)
-            if cluster_bbox:
-                render_page = prev_page
-
-
-        if cluster_bbox is None:
-            continue
-        if cluster_bbox.width < _MIN_RENDER_PT or cluster_bbox.height < _MIN_RENDER_PT:
-            continue
-
-        # Reject text-dense regions — tables have many text blocks inside their
-        # bbox whereas figures have very few (axis labels, legend entries only).
-        inner_text_blocks = [
-            b for b in render_page.get_text("blocks", clip=cluster_bbox)
-            if b[6] == 0 and b[4].strip()
-        ]
-        if len(inner_text_blocks) > 12:
-            console.print(
-                f"  [dim]page {page_num + 1}[/dim] "
-                f"[yellow]skipped vector cluster[/yellow] — likely a table "
-                f"({len(inner_text_blocks)} text blocks)"
-            )
-            continue
-
         idx = next_idx + len(results)
-        png_path = figures_dir / f"figure_{idx}.png"
-
-        mat = fitz.Matrix(_VEC_RENDER_ZOOM, _VEC_RENDER_ZOOM)
-        pix = render_page.get_pixmap(matrix=mat, clip=cluster_bbox)
-        pix.save(str(png_path))
-
-        caption = find_caption(page, caption_rect, doc, page_num, idx)
+        caption_text = " ".join(caption_block[4].strip().split())
         results.append(FigureInfo(
-            index=idx, path=png_path, page=page_num + 1,
-            caption=caption, width_px=pix.width, height_px=pix.height,
+            index=idx, path=None, page=page_num + 1,
+            caption=caption_text, width_px=0, height_px=0,
+            vector_only=True,
         ))
-        status = "caption found" if caption else "no caption"
         console.print(
             f"  [dim]figure {idx}[/dim] page {page_num + 1} "
-            f"[cyan](vector)[/cyan] — {status}"
+            f"[yellow](vector — detected, excluded)[/yellow]"
         )
 
     return results
