@@ -5,6 +5,7 @@ clean, self-contained HTML viewer — from a single CLI command.
 
 ![Python](https://img.shields.io/badge/python-3.10%2B-blue)
 ![Version](https://img.shields.io/badge/version-0.3.0-green)
+[![CI](https://github.com/rkonakal-blip/papersnap/actions/workflows/ci.yml/badge.svg)](https://github.com/rkonakal-blip/papersnap/actions/workflows/ci.yml)
 
 ## Motivation
 
